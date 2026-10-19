@@ -13,12 +13,12 @@ Watches the CDC booking page and sends you a Telegram message when a lesson slot
 
 Firefox won't work for this. The attach mechanism (CDP) is Chromium-only, so use Chrome or Edge.
 
-## Setup (Windows)
+## Setup (Linux with uv)
 
 ```
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+uv venv
+source .venv/bin/activate
+uv pip install -r requirements.txt
 copy .env.example .env
 ```
 
@@ -34,7 +34,7 @@ You do **not** need `playwright install`; the bot drives the Chrome/Edge you alr
 
 ## Daily use
 
-1. Double-click `launch_browser.bat`, log in to the CDC portal, leave the window open.
+1. Double-click `launch_browser.sh`, log in to the CDC portal, leave the window open.
 2. `python -m cdc_bot check` runs one check and prints what the bot sees.
 3. `python -m cdc_bot run` starts the real loop. Ctrl+C stops it.
 
