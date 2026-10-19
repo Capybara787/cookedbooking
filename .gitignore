@@ -1,2 +1,10 @@
+# Secrets - never commit these
 .env
 
+# Generated files
+.venv/
+__pycache__/
+*.pyc
+cdc_bot.log*
+debug/
+.pytest_cache/

@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<!-- SYNTHETIC fixture. Modelled on a phone screenshot of the booking grid, NOT a real
+     capture from your account. The real table markup may differ. Replace this with a
+     real dump (python -m cdc_bot check --dump) once slots exist. -->
+<html>
+<head><title>ComfortDelGro Driving Centre Online Booking Portal</title></head>
+<body>
+<form method="post" action="./BookingPL.aspx" id="form1">
+
+<div id="ContentPlaceHolder1_UpdatePanel1">
+  <select name="ctl00$ContentPlaceHolder1$ddlCourse" id="ContentPlaceHolder1_ddlCourse">
+    <option value="">-Please Select-</option>
+    <option selected="selected" value="ONETEAM             ">02. Class 3 Motorcar (One Team)                   </option>
+  </select>
+</div>
+
+<div id="ContentPlaceHolder1_updMainGridView">
+  <div class="grid-scroll-container">
+    <table id="ContentPlaceHolder1_gvSessions">
+      <tr>
+        <th>Date</th><th>Day</th>
+        <th>1<br/>08:30-10:10</th><th>2<br/>10:20-12:00</th><th>3<br/>12:45-14:25</th>
+        <th>4<br/>14:35-16:15</th><th>5<br/>16:25-18:05</th><th>6<br/>18:50-20:30</th><th>7<br/>20:40-22:20</th>
+      </tr>
+      <tr>
+        <td>24/Oct/2026</td><td>SAT</td>
+        <td></td><td></td><td><img src="../images/Class3And3A/images1.gif" /></td><td></td><td></td><td></td><td></td>
+      </tr>
+      <tr>
+        <td>26/Oct/2026</td><td>MON</td>
+        <td></td><td></td><td></td><td></td><td><img src="../images/Class3And3A/images1.gif" /></td><td></td><td></td>
+      </tr>
+      <tr>
+        <!-- A session you reserved yourself (red icon): NOT an available slot -->
+        <td>27/Oct/2026</td><td>TUE</td>
+        <td><img src="../images/Class3And3A/images2.gif" /></td><td></td><td></td><td></td><td></td><td></td><td></td>
+      </tr>
+    </table>
+  </div>
+</div>
+
+<div id="ContentPlaceHolder1_updDisplayType">
+  <img src="../images/Class3And3A/images1.gif" /> Available
+</div>
+
+</form>
+</body>
+</html>

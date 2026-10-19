@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<!-- Based on the REAL DevTools capture of the empty state (no slots available).
+     Simplified: scripts and hidden form fields removed. -->
+<html>
+<head><title>ComfortDelGro Driving Centre Online Booking Portal</title></head>
+<body>
+<form method="post" action="./BookingPL.aspx" id="form1">
+
+<div id="ContentPlaceHolder1_UpdatePanel1">
+  <select name="ctl00$ContentPlaceHolder1$ddlCourse" id="ContentPlaceHolder1_ddlCourse">
+    <option value="">-Please Select-</option>
+    <option selected="selected" value="ONETEAM             ">02. Class 3 Motorcar (One Team)                   </option>
+  </select>
+</div>
+
+<div id="ContentPlaceHolder1_updSessionAvl">
+  <span id="ContentPlaceHolder1_lblFullBookMsg" style="color:Red;font-weight:bold;">No available slots currently. Please check again for cancellations by learners.</span>
+</div>
+
+<div id="ContentPlaceHolder1_updMainGridView">
+  <div class="grid-scroll-container"></div>
+  <table>
+    <tr><td><span id="ContentPlaceHolder1_lblStoreValue"></span></td></tr>
+    <tr><td><span id="ContentPlaceHolder1_lblCurrentCharge"></span></td></tr>
+    <tr><td><span id="ContentPlaceHolder1_lblNewBalance"></span></td></tr>
+  </table>
+</div>
+
+<!-- The legend uses the same car icons. It's a different panel, so it must NOT count as a slot. -->
+<div id="ContentPlaceHolder1_updDisplayType">
+  <img id="ContentPlaceHolder1_imgAvailable" src="../images/Class3And3A/images1.gif" /> Available
+  <img id="ContentPlaceHolder1_imgReserved" src="../images/Class3And3A/images2.gif" /> You have reserved this session
+  <img id="ContentPlaceHolder1_imgBooked" src="../images/Class3And3A/images3.gif" /> You have confirmed this session
+</div>
+
+</form>
+</body>
+</html>
