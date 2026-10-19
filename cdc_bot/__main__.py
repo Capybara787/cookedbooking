@@ -123,7 +123,7 @@ def _next_delay(cfg: Config, decision: Decision) -> float:
     if decision.cooldown_seconds:
         return decision.cooldown_seconds
     # A little randomness so we aren't hitting the server on an exact metronome.
-    return cfg.poll_seconds * random.uniform(30, 60)
+    return cfg.poll_seconds * random.uniform(0.8, 1.2)
 
 
 def _print_result(result: CheckResult) -> None:
