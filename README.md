@@ -6,7 +6,7 @@ Watches the CDC booking page and sends you a Telegram message when a lesson slot
 
 ## How it works
 
-1. `launch_browser.bat` opens Chrome or Edge with a debugging port (reachable from this PC only) and its own profile folder.
+1. `launch_browser.sh` opens Chrome or Edge with a debugging port (reachable from this PC only) and its own profile folder.
 2. You log in yourself, including the reCAPTCHA, and leave that window open.
 3. `python -m cdc_bot run` attaches to that browser, opens a tab of its own, re-picks the course in the dropdown, reads the slot grid, and repeats every few minutes.
 4. You get a Telegram message when something *changes* (new slot, logged out, back to normal), not on every check.
