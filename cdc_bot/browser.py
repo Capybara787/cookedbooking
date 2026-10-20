@@ -20,7 +20,7 @@ from playwright.sync_api import sync_playwright
 
 from .config import Config
 from .models import CheckResult, Status
-from .parser import COURSE_SELECT_ID, classify_page
+from .parser import COURSE_SELECT_ID, classify_page, current_team_name, other_team_selector
 
 COURSE_SELECTOR = f"#{COURSE_SELECT_ID}"
 
@@ -114,7 +114,52 @@ class BrowserSession:
         if not self._select_course():
             return CheckResult(Status.UNEXPECTED, detail=f"Course {self._cfg.course_value!r} isn't in the dropdown.")
 
-        return self._with_location(classify_page(page.content()))
+        html = page.content()
+        if self._cfg.course_value.upper() != "ONETEAM":
+            return self._with_location(classify_page(html, team=current_team_name(html)))
+
+        # The previous check may have left another team selected. Return the
+        # dropdown to its placeholder before reading the learner's own grid.
+        team_control = other_team_selector(html)
+        if team_control is None:
+            return CheckResult(
+                Status.UNEXPECTED,
+                detail="The 'from other teams' dropdown is missing from the booking page.",
+            )
+        selector, _, placeholder = team_control
+        if placeholder is None:
+            return CheckResult(Status.UNEXPECTED, detail="The other-teams dropdown has no placeholder option.")
+        selected_value = page.eval_on_selector(selector, "select => select.value")
+        if selected_value != placeholder:
+            self._select_team(selector, placeholder)
+
+        html = page.content()
+        current_team = current_team_name(html)
+        current_result = classify_page(html, team=current_team)
+        if current_result.status.is_problem:
+            return self._with_location(current_result)
+
+        team_control = other_team_selector(html)
+        if team_control is None:
+            return CheckResult(Status.UNEXPECTED, detail="The 'from other teams' dropdown disappeared after refresh.")
+        selector, options, _ = team_control
+        slots = set(current_result.slots)
+        checked_teams: set[str] = set()
+        for value, label in options:
+            team = label.strip()
+            if not team or team.casefold() == current_team.strip().casefold() or team.casefold() in checked_teams:
+                continue
+            checked_teams.add(team.casefold())
+            self._select_team(selector, value)
+            result = classify_page(page.content(), team=team)
+            if result.status.is_problem:
+                detail = f"Couldn't read slots for {team}: {result.detail}" if result.detail else f"Couldn't read slots for {team}."
+                return CheckResult(result.status, detail=detail)
+            slots.update(result.slots)
+
+        if slots:
+            return CheckResult(Status.SLOTS, slots=frozenset(slots))
+        return CheckResult(Status.NO_SLOTS)
 
     def _on_booking_page(self) -> bool:
         if urlparse(self._page.url).path.lower() != self._booking_path:
@@ -136,6 +181,14 @@ class BrowserSession:
         page.wait_for_function(_WEBFORMS_IDLE_JS, timeout=30_000)
         page.wait_for_timeout(300)  # small safety margin
         return True
+
+    def _select_team(self, selector: str, value: str) -> None:
+        """Select another team and wait for the portal's partial page update."""
+        page = self._page
+        with page.expect_response(self._is_postback, timeout=30_000):
+            page.select_option(selector, value=value)
+        page.wait_for_function(_WEBFORMS_IDLE_JS, timeout=30_000)
+        page.wait_for_timeout(300)
 
     def _is_postback(self, response) -> bool:
         return response.request.method == "POST" and urlparse(response.url).path.lower() == self._booking_path

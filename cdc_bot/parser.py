@@ -30,7 +30,7 @@ IMG_KNOWN_NOT_AVAILABLE = {"images2.gif", "images3.gif"}  # reserved by you / co
 _HEADER_RE = re.compile(r"(\d+)\D+?(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})")
 
 
-def classify_page(html: str) -> CheckResult:
+def classify_page(html: str, team: str = "") -> CheckResult:
     """Decide what the page is telling us: slots, no slots, or something odd."""
     soup = BeautifulSoup(html, "html.parser")
 
@@ -55,7 +55,7 @@ def classify_page(html: str) -> CheckResult:
             unknown.add(name)
 
     if available:
-        slots = frozenset(_describe(el, n) for n, el in enumerate(available, start=1))
+        slots = frozenset(_describe(el, n, team) for n, el in enumerate(available, start=1))
         return CheckResult(Status.SLOTS, slots=slots)
 
     # 3. Icons we don't recognise are suspicious: maybe "available" looks different
@@ -97,7 +97,80 @@ def _image_name(src: str | None) -> str:
     return src.split("?")[0].rsplit("/", 1)[-1].lower()
 
 
-def _describe(icon: Tag, ordinal: int) -> Slot:
+def current_team_name(html: str) -> str:
+    """Read the current-team label shown above the booking grid, if present."""
+    soup = BeautifulSoup(html, "html.parser")
+    marker = re.compile(r"you\s+are\s+with", re.IGNORECASE)
+    for text in soup.find_all(string=marker):
+        for parent in [text.parent, *text.parent.parents]:
+            value = parent.get_text(" ", strip=True)
+            match = re.search(
+                r"you\s+are\s+with\s+(.+?)(?=\s+(?:slots available|note:|select course)\b|$)",
+                value,
+                re.IGNORECASE,
+            )
+            if match:
+                team = match.group(1).strip()
+                if team:
+                    return team
+    return ""
+
+
+def other_team_selector(html: str) -> tuple[str, list[tuple[str, str]], str | None] | None:
+    """Find the dropdown next to the "from other teams" label.
+
+    The portal uses generated ASP.NET element IDs, so locate the control by its
+    visible heading and return a CSS selector plus its exact option values.
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    course = soup.find("select", id=COURSE_SELECT_ID)
+    heading = soup.find(string=re.compile(r"from\s+other\s+teams", re.IGNORECASE))
+    if heading is None:
+        return None
+
+    team_select = None
+    for container in [heading.parent, *heading.parent.parents]:
+        candidates = [
+            select for select in container.find_all("select")
+            if select is not course
+        ]
+        if candidates:
+            team_select = candidates[0]
+            break
+    if team_select is None:
+        team_select = heading.find_next("select")
+    if team_select is None or team_select is course:
+        return None
+
+    element_id = team_select.get("id")
+    name = team_select.get("name")
+    if element_id:
+        selector = f'select[id="{element_id}"]'
+    elif name:
+        selector = f'select[name="{name}"]'
+    else:
+        return None
+
+    all_options = team_select.find_all("option", recursive=False)
+    placeholder = next(
+        (
+            str(option.get("value", ""))
+            for option in all_options
+            if not option.get("value", "").strip()
+            or re.match(r"[-\s]*please select|select team", option.get_text(" ", strip=True), re.IGNORECASE)
+        ),
+        None,
+    )
+    options = [
+        (str(option.get("value", "")), option.get_text(" ", strip=True))
+        for option in all_options
+        if option.get("value", "").strip() and option.get_text(" ", strip=True)
+        and str(option.get("value", "")) != placeholder
+    ]
+    return selector, options, placeholder
+
+
+def _describe(icon: Tag, ordinal: int, team: str = "") -> Slot:
     """Work out which date and time an 'available' icon sits under (best effort).
 
     Spotting the slot is what matters; naming it is a bonus. So a surprise in the
@@ -115,9 +188,10 @@ def _describe(icon: Tag, ordinal: int) -> Slot:
             day=cells[1].get_text(" ", strip=True),
             number=number,
             time=time,
+            team=team,
         )
     except Exception:  # noqa: BLE001 - deliberate, see docstring
-        return Slot(date=f"(unreadable cell #{ordinal})", day="", number=0, time="")
+        return Slot(date=f"(unreadable cell #{ordinal})", day="", number=0, time="", team=team)
 
 
 def _column_info(row: Tag, column: int) -> tuple[int, str]:
