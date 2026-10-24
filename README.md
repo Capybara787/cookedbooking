@@ -6,23 +6,25 @@ Watches the CDC booking page and sends you a Telegram message when a lesson slot
 
 ## How it works
 
-1. `launch_browser.sh` opens Chrome or Edge with a debugging port (reachable from this PC only) and its own profile folder.
+1. `launch_browser.bat` opens Chrome or Edge with a debugging port (reachable from this PC only) and its own profile folder.
 2. You log in yourself, including the reCAPTCHA, and leave that window open.
-3. `python -m cdc_bot run` attaches to that browser, opens a tab of its own, re-picks the course in the dropdown, checks your team's slot grid, then selects each team in the "from other teams" dropdown and checks that grid too. It repeats every few minutes.
+3. `python -m cdc_bot run` attaches to that browser, opens a tab of its own, re-picks the course in the dropdown, reads the server's reply (your own team's slots, then each other team listed as having slots), and repeats every few minutes.
 4. You get a Telegram message when something *changes* (new slot, logged out, back to normal), not on every check.
 
 Firefox won't work for this. The attach mechanism (CDP) is Chromium-only, so use Chrome or Edge.
 
-## Setup (Linux with uv)
+## Setup (Windows)
 
 ```
-uv venv
-source .venv/bin/activate
-uv pip install -r requirements.txt
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
 copy .env.example .env
 ```
 
 You do **not** need `playwright install`; the bot drives the Chrome/Edge you already have.
+
+**WSL / Linux instead:** use `source .venv/bin/activate` and `cp .env.example .env`, and start the browser with `./launch_browser.sh` (run `chmod +x launch_browser.sh` once). It expects the `chromium` command; edit the script if yours is named differently. Run the bot from the same WSL session as the browser.
 
 **Telegram**
 
@@ -34,7 +36,7 @@ You do **not** need `playwright install`; the bot drives the Chrome/Edge you alr
 
 ## Daily use
 
-1. Double-click `launch_browser.sh`, log in to the CDC portal, leave the window open.
+1. Double-click `launch_browser.bat`, log in to the CDC portal, leave the window open.
 2. `python -m cdc_bot check` runs one check and prints what the bot sees.
 3. `python -m cdc_bot run` starts the real loop. Ctrl+C stops it.
 
@@ -42,7 +44,24 @@ If the session expires, you'll get a "log in again" message. Log in again in tha
 
 For 24/7 running, set Windows power settings to never sleep while plugged in.
 
-## Commands
+## Controlling the bot from Telegram
+
+Once `run` is going, message your bot:
+
+| Send | Does |
+|---|---|
+| `/pause` (or `/stop`) | Stops checking for slots. You get a reminder every `HEARTBEAT_HOURS` while paused. |
+| `/resume` (or `/start`) | Starts checking again, immediately, and tells you about any slots available right now. |
+| `/status` | Running or paused, the last check's result (with any slots), and when the next check is due. |
+| `/help` | Lists the commands. |
+
+- Only the chat in `TELEGRAM_CHAT_ID` is obeyed. Anyone can message a bot, so everything from other chats is ignored.
+- Commands sent while the bot was switched off are ignored when it starts.
+- The bot answers while it waits between checks. A command sent in the few seconds a check takes is answered right after it.
+- Pausing is not remembered across restarts: starting `run` always starts checking.
+- Only one copy of the bot should run per Telegram bot, otherwise Telegram reports a "Conflict" error about `getUpdates`.
+
+## Commands (on your PC)
 
 | Command | What it does |
 |---|---|
@@ -60,17 +79,19 @@ For 24/7 running, set Windows power settings to never sleep while plugged in.
 | `cdc_bot/browser.py` | Attaches to your browser and refreshes the slot list |
 | `cdc_bot/parser.py` | HTML in, result out (pure functions, easy to test) |
 | `cdc_bot/alerts.py` | Decides when a message is worth sending |
+| `cdc_bot/commands.py` | Telegram commands: pause, resume, status |
 | `cdc_bot/notifier.py` | Telegram, via plain HTTP requests |
 | `cdc_bot/config.py` | Reads `.env` |
 | `cdc_bot/models.py` | Shared data types |
 | `cdc_bot/__main__.py` | Command line and the main loop |
-| `tests/` | Run with `pip install pytest` then `pytest` |
+| `tests/` | Run with `pip install pytest` then `python -m pytest` |
 
 ## Known gaps (not yet verified against the real site)
 
 - **The "slot available" detection is inferred.** It assumes available cells use the `images1.gif` car icon (from the page's legend) inside the grid panel. There were no slots when the page was captured, so this hasn't been seen on a real populated grid. If the page looks different, the bot reports "page not understood" instead of guessing. `tests/fixtures/slots_found.html` is synthetic.
 - **Going straight to the booking URL is untested.** If the site insists on being reached through its menus, the bot will say it can't see the booking page.
-- **Only the first date window is checked.** The "Next 5 Days" arrows aren't scanned yet.
+- **Other teams' grids are unverified.** They're read the same way as your own team's, but no other team's slot grid has been seen yet. Alerts for them are labelled with the team and a premium-fee note.
+- **Only the first date window is checked** for each team. The "Next 5 Days" arrows aren't followed yet.
 
 ## Safety notes
 

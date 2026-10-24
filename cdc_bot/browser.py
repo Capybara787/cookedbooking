@@ -8,9 +8,14 @@ re-picks the course from the dropdown to refresh the slot list, like you would.
 Why attach instead of logging in from the script? The login is protected by
 reCAPTCHA on purpose. We respect that: a human logs in, the script only watches.
 The browser also takes care of the ASP.NET __VIEWSTATE bookkeeping for us.
+
+We read the server's reply to each dropdown change, not the rendered page. The
+reply is the source of truth, and it doesn't depend on when the page's JavaScript
+gets round to showing it (reading the page too early gave false "unexpected" results).
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from urllib.parse import urlparse
 
@@ -20,9 +25,21 @@ from playwright.sync_api import sync_playwright
 
 from .config import Config
 from .models import CheckResult, Status
-from .parser import COURSE_SELECT_ID, classify_page, current_team_name, other_team_selector
+from .parser import (
+    COURSE_SELECT_ID,
+    OTHER_TEAM_SELECT_ID,
+    Record,
+    classify_page,
+    delta_to_html,
+    other_team_options,
+    parse_delta,
+    scan_grid,
+)
+
+log = logging.getLogger("cdc_bot")
 
 COURSE_SELECTOR = f"#{COURSE_SELECT_ID}"
+OTHER_TEAM_SELECTOR = f"#{OTHER_TEAM_SELECT_ID}"
 
 # The <option> values are padded with trailing spaces ("ONETEAM             "),
 # so find the option whose trimmed value matches and use its exact value.
@@ -100,98 +117,80 @@ class BrowserSession:
         # contexts[0] is the browser's normal profile, so it has your login cookies.
         # We use a tab of our own so we never poke the tab you're working in.
         self._page = self._browser.contexts[0].new_page()
+        self._page.on("dialog", self._on_dialog)  # log pop-up errors the page would otherwise hide
 
     def _check_booking_page(self) -> CheckResult:
         page = self._page
 
-        if not self._on_booking_page():
-            page.goto(self._cfg.booking_url, wait_until="domcontentloaded", timeout=30_000)
-            try:
-                page.wait_for_selector(COURSE_SELECTOR, timeout=10_000)
-            except PlaywrightTimeout:
-                return self._with_location(classify_page(page.content()))
+        # A fresh page load every time: re-selecting the already-selected course
+        # doesn't make ASP.NET rebuild the slot list.
+        page.goto(self._cfg.booking_url, wait_until="domcontentloaded", timeout=30_000)
+        try:
+            page.wait_for_selector(COURSE_SELECTOR, timeout=10_000)
+        except PlaywrightTimeout:
+            return self._with_location(classify_page(page.content()))  # bounced to login, etc.
 
-        if not self._select_course():
+        option_value = page.eval_on_selector(COURSE_SELECTOR, _FIND_OPTION_JS, self._cfg.course_value)
+        if option_value is None:
             return CheckResult(Status.UNEXPECTED, detail=f"Course {self._cfg.course_value!r} isn't in the dropdown.")
 
-        html = page.content()
-        if self._cfg.course_value.upper() != "ONETEAM":
-            return self._with_location(classify_page(html, team=current_team_name(html)))
+        # 1. Your own team's slots.
+        records, problem = self._choose(COURSE_SELECTOR, option_value)
+        if problem:
+            return problem
+        own_html = delta_to_html(records)
+        result = classify_page(own_html)
+        if result.status.is_problem:
+            return self._with_location(result)
+        slots = set(result.slots)
 
-        # The previous check may have left another team selected. Return the
-        # dropdown to its placeholder before reading the learner's own grid.
-        team_control = other_team_selector(html)
-        if team_control is None:
-            return CheckResult(
-                Status.UNEXPECTED,
-                detail="The 'from other teams' dropdown is missing from the booking page.",
-            )
-        selector, _, placeholder = team_control
-        if placeholder is None:
-            return CheckResult(Status.UNEXPECTED, detail="The other-teams dropdown has no placeholder option.")
-        selected_value = page.eval_on_selector(selector, "select => select.value")
-        if selected_value != placeholder:
-            self._select_team(selector, placeholder)
-
-        html = page.content()
-        current_team = current_team_name(html)
-        current_result = classify_page(html, team=current_team)
-        if current_result.status.is_problem:
-            return self._with_location(current_result)
-
-        team_control = other_team_selector(html)
-        if team_control is None:
-            return CheckResult(Status.UNEXPECTED, detail="The 'from other teams' dropdown disappeared after refresh.")
-        selector, options, _ = team_control
-        slots = set(current_result.slots)
-        checked_teams: set[str] = set()
-        for value, label in options:
-            team = label.strip()
-            if not team or team.casefold() == current_team.strip().casefold() or team.casefold() in checked_teams:
-                continue
-            checked_teams.add(team.casefold())
-            self._select_team(selector, value)
-            result = classify_page(page.content(), team=team)
-            if result.status.is_problem:
-                detail = f"Couldn't read slots for {team}: {result.detail}" if result.detail else f"Couldn't read slots for {team}."
-                return CheckResult(result.status, detail=detail)
-            slots.update(result.slots)
+        # 2. Other teams. The dropdown only lists teams that have slots, so look at each.
+        for value, label in other_team_options(own_html):
+            records, problem = self._choose(OTHER_TEAM_SELECTOR, value)
+            if problem:
+                return problem
+            found, unknown = scan_grid(delta_to_html(records), team=label)
+            if not found and unknown:
+                return CheckResult(Status.UNEXPECTED, detail=f"{label}: unrecognised icons in the grid: {unknown[:3]}")
+            slots |= found
 
         if slots:
             return CheckResult(Status.SLOTS, slots=frozenset(slots))
         return CheckResult(Status.NO_SLOTS)
 
-    def _on_booking_page(self) -> bool:
-        if urlparse(self._page.url).path.lower() != self._booking_path:
-            return False
-        return self._page.query_selector(COURSE_SELECTOR) is not None
-
-    def _select_course(self) -> bool:
-        """Pick the course in the dropdown and wait for the page to finish updating."""
+    def _choose(self, selector: str, value: str) -> tuple[list[Record], CheckResult | None]:
+        """Pick a dropdown option; return the server's reply as records (and a problem, if any)."""
         page = self._page
-        option_value = page.eval_on_selector(COURSE_SELECTOR, _FIND_OPTION_JS, self._cfg.course_value)
-        if option_value is None:
-            return False
+        with page.expect_response(self._is_postback, timeout=30_000) as info:
+            page.select_option(selector, value=value, timeout=30_000)
+        response = info.value
+        try:
+            text = response.text()
+        except PlaywrightError:
+            text = ""  # a redirect has no body to read
+        records = parse_delta(text)
+        log.info("Dropdown POST: HTTP %s, %d chars, %d records", response.status, len(text), len(records))
+        # Let the page finish its own update before we touch the next dropdown.
+        page.wait_for_function(_WEBFORMS_IDLE_JS, polling=500, timeout=30_000)
+        return records, self._reply_problem(response.status, records)
 
-        # Changing the dropdown fires a background POST (the UpdatePanel request
-        # you captured in DevTools). Wait for it to come back...
-        with page.expect_response(self._is_postback, timeout=30_000):
-            page.select_option(COURSE_SELECTOR, value=option_value)
-        # ...then for the page's own JavaScript to finish swapping in the new HTML.
-        page.wait_for_function(_WEBFORMS_IDLE_JS, timeout=30_000)
-        page.wait_for_timeout(300)  # small safety margin
-        return True
-
-    def _select_team(self, selector: str, value: str) -> None:
-        """Select another team and wait for the portal's partial page update."""
-        page = self._page
-        with page.expect_response(self._is_postback, timeout=30_000):
-            page.select_option(selector, value=value)
-        page.wait_for_function(_WEBFORMS_IDLE_JS, timeout=30_000)
-        page.wait_for_timeout(300)
+    def _reply_problem(self, status: int, records: list[Record]) -> CheckResult | None:
+        kinds = {r.kind for r in records}
+        if 300 <= status < 400 or "pageRedirect" in kinds:
+            return self._with_location(CheckResult(Status.LOGGED_OUT, detail="The server redirected the dropdown request."))
+        error = next((r for r in records if r.kind == "error"), None)
+        if error:
+            return CheckResult(Status.UNEXPECTED, detail=f"The server reported an error: HTTP {error.id}: {error.content[:100]}")
+        if not records:
+            return CheckResult(Status.UNEXPECTED, detail=f"Unreadable reply to the dropdown (HTTP {status}).")
+        return None
 
     def _is_postback(self, response) -> bool:
         return response.request.method == "POST" and urlparse(response.url).path.lower() == self._booking_path
+
+    def _on_dialog(self, dialog) -> None:
+        log.warning("Page showed a %s dialog: %s", dialog.type, dialog.message[:200])
+        dialog.dismiss()
 
     def _with_location(self, result: CheckResult) -> CheckResult:
         """If we've been bounced off the booking page, say where we ended up."""

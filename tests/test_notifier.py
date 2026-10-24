@@ -52,3 +52,32 @@ def test_find_chats_reads_getupdates(monkeypatch):
     ]}
     monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResponse(payload))
     assert Telegram(TOKEN).find_chats() == [("987654", "Sam")]
+
+
+def test_get_updates_long_polls_with_a_longer_http_timeout(monkeypatch):
+    seen = {}
+
+    def fake_post(url, json, timeout):
+        seen.update(url=url, json=json, timeout=timeout)
+        return FakeResponse({"ok": True, "result": [{"update_id": 5}]})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    assert Telegram(TOKEN).get_updates(offset=7, wait_seconds=25) == [{"update_id": 5}]
+    assert seen["url"].endswith("/getUpdates")
+    assert seen["json"]["offset"] == 7 and seen["json"]["timeout"] == 25
+    assert seen["timeout"] > 25  # otherwise requests would give up before Telegram answers
+
+
+def test_skip_backlog_returns_the_next_offset_or_none(monkeypatch):
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResponse({"ok": True, "result": [{"update_id": 41}]}))
+    assert Telegram(TOKEN).skip_backlog() == 42
+    monkeypatch.setattr(requests, "post", lambda *a, **k: FakeResponse({"ok": True, "result": []}))
+    assert Telegram(TOKEN).skip_backlog() is None
+
+
+def test_set_commands_posts_the_menu(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(requests, "post", lambda url, json, timeout: seen.update(url=url, json=json) or FakeResponse({"ok": True}))
+    Telegram(TOKEN).set_commands([("pause", "Stop")])
+    assert seen["url"].endswith("/setMyCommands")
+    assert seen["json"] == {"commands": [{"command": "pause", "description": "Stop"}]}

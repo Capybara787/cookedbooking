@@ -63,3 +63,52 @@ def test_redact_removes_scripts_and_hidden_values():
     assert "secret" not in cleaned
     assert "abc123" not in cleaned
     assert "460.80" not in cleaned
+
+
+# ---- reading the server's reply directly ---------------------------------------
+from replies import SLOT_GRID, encode, other_team_reply, own_team_reply  # noqa: E402
+from cdc_bot.parser import delta_to_html, other_team_options, parse_delta, scan_grid  # noqa: E402
+
+PADDED_TEAM = "1T TEAM 17          "
+
+
+def test_parse_delta_copes_with_pipes_inside_content():
+    records = parse_delta("1|#||4|" + encode("updatePanel", "p1", "a|b|c") + encode("hiddenField", "__VIEWSTATE", "x|y"))
+    assert [(r.kind, r.id, r.content) for r in records] == [
+        ("#", "", "4"), ("updatePanel", "p1", "a|b|c"), ("hiddenField", "__VIEWSTATE", "x|y"),
+    ]
+
+
+def test_parse_delta_stops_cleanly_on_garbage_or_truncation():
+    assert parse_delta("<html>please log in</html>") == []
+    assert parse_delta("") == []
+    assert parse_delta("500|updatePanel|p1|too short|") == []  # declared length doesn't match
+
+
+def test_reply_with_no_slots_is_classified_like_a_page():
+    html = delta_to_html(parse_delta(own_team_reply()))
+    assert classify_page(html).status is Status.NO_SLOTS
+    assert other_team_options(html) == []
+
+
+def test_other_team_options_keep_the_exact_padded_value():
+    html = delta_to_html(parse_delta(own_team_reply(other_teams=(PADDED_TEAM,))))
+    assert other_team_options(html) == [(PADDED_TEAM, "1T TEAM 17")]
+
+
+def test_other_team_slots_are_tagged_with_the_team():
+    slots, unknown = scan_grid(delta_to_html(parse_delta(other_team_reply(SLOT_GRID))), team="1T TEAM 17")
+    assert unknown == []
+    (slot,) = slots
+    assert slot.team == "1T TEAM 17" and slot.time == "08:30-10:10"
+    assert "1T TEAM 17" in slot.describe() and "premium" in slot.describe()
+
+
+def test_own_team_slot_description_is_unchanged():
+    assert Slot("24/Oct/2026", "SAT", 3, "12:45-14:25").describe() == "SAT 24/Oct/2026 - slot 3 (12:45-14:25)"
+
+
+def test_redact_also_blanks_the_page_header_details():
+    html = '<span id="HeaderSub_lblName">FAN DIWEN</span><span id="HeaderSub_lblUserID">00987160</span>'
+    cleaned = redact_html(html)
+    assert "FAN" not in cleaned and "00987160" not in cleaned

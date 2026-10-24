@@ -51,12 +51,34 @@ class Telegram:
                 chats[str(chat["id"])] = name
         return list(chats.items())
 
+    def get_updates(self, offset: int | None, wait_seconds: int) -> list[dict]:
+        """Messages sent to the bot since `offset`.
+
+        With wait_seconds > 0 this is "long polling": Telegram holds the request open
+        until a message arrives (or the time is up), so replies feel instant without
+        us hammering the API.
+        """
+        payload: dict = {"timeout": wait_seconds, "allowed_updates": ["message"]}
+        if offset is not None:
+            payload["offset"] = offset
+        # The HTTP timeout must outlast the long-poll wait, or requests gives up first.
+        return self._call("getUpdates", payload, http_timeout=wait_seconds + 10).get("result", [])
+
+    def skip_backlog(self) -> int | None:
+        """Mark everything already waiting as read, so old commands aren't obeyed. Returns the next offset."""
+        updates = self.get_updates(offset=-1, wait_seconds=0)  # a negative offset = "just the latest"
+        return updates[-1]["update_id"] + 1 if updates else None
+
+    def set_commands(self, commands: list[tuple[str, str]]) -> None:
+        """Fill in the command menu Telegram shows next to the message box."""
+        self._call("setMyCommands", {"commands": [{"command": c, "description": d} for c, d in commands]})
+
     # ------------------------------------------------------------------ internals
-    def _call(self, method: str, payload: dict) -> dict:
+    def _call(self, method: str, payload: dict, http_timeout: float = TIMEOUT_SECONDS) -> dict:
         # The token is part of the URL path, which is why it must never be logged.
         url = f"{API_ROOT}/bot{self._token}/{method}"
         try:
-            response = requests.post(url, json=payload, timeout=TIMEOUT_SECONDS)
+            response = requests.post(url, json=payload, timeout=http_timeout)
         except requests.RequestException as exc:
             # requests' error text includes the full URL (and so the token).
             # `from None` also stops Python printing the original exception.

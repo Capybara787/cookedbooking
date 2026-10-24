@@ -91,3 +91,19 @@ def test_heartbeat_after_24_hours_only():
 
 def test_heartbeat_can_be_disabled():
     assert policy(heartbeat_hours=0).handle(NONE, T0 + timedelta(days=3)).messages == []
+
+
+def test_reset_makes_existing_slots_alert_again():
+    p = policy()
+    p.handle(slots(A), T0)
+    assert p.handle(slots(A), T0 + timedelta(minutes=5)).messages == []
+    p.reset_seen_slots()
+    assert len(p.handle(slots(A), T0 + timedelta(minutes=10)).messages) == 1
+
+
+def test_paused_reminder_only_when_due_and_can_be_disabled():
+    p = policy()
+    assert p.paused_reminder(T0 + timedelta(hours=23)) == []
+    assert "paused" in p.paused_reminder(T0 + timedelta(hours=24))[0]
+    assert p.paused_reminder(T0 + timedelta(hours=25)) == []
+    assert policy(heartbeat_hours=0).paused_reminder(T0 + timedelta(days=3)) == []

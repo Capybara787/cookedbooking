@@ -29,13 +29,13 @@ class Slot:
     day: str     # e.g. "SAT"
     number: int  # column 1-7 in the grid
     time: str    # e.g. "12:45-14:25" ("" if the header couldn't be read)
-    team: str = ""  # the learner's team, or the selected other team
+    team: str = ""  # "" = your own team; otherwise another team's name (premium fee applies)
 
     def describe(self) -> str:
         when = f"{self.day} {self.date}".strip()
         slot = f"slot {self.number}" + (f" ({self.time})" if self.time else "")
-        team = f"{self.team} - " if self.team else ""
-        return f"{when} - {team}{slot}"
+        extra = f" - {self.team} (other team, premium fee)" if self.team else ""
+        return f"{when} - {slot}{extra}"
 
     @property
     def sort_key(self) -> tuple[datetime, int]:

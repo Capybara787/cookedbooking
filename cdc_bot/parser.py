@@ -11,6 +11,7 @@ to say "unexpected" rather than guess when it sees something unfamiliar.
 from __future__ import annotations
 
 import re
+from typing import NamedTuple
 
 from bs4 import BeautifulSoup, Tag
 
@@ -18,6 +19,8 @@ from .models import CheckResult, Slot, Status
 
 # --- Facts taken from the real page (DevTools capture) ------------------------
 COURSE_SELECT_ID = "ContentPlaceHolder1_ddlCourse"
+OTHER_TEAM_SELECT_ID = "ContentPlaceHolder1_ddlOthTeamID"  # lists other teams that have slots
+OTHER_TEAM_PLACEHOLDER = "-please select-"
 GRID_PANEL_ID = "ContentPlaceHolder1_updMainGridView"   # the UpdatePanel holding the slot grid
 NO_SLOTS_MESSAGE_ID = "ContentPlaceHolder1_lblFullBookMsg"
 NO_SLOTS_TEXT = "no available slots"
@@ -43,25 +46,14 @@ def classify_page(html: str, team: str = "") -> CheckResult:
         return CheckResult(Status.UNEXPECTED, detail="The slot grid panel is missing from the page.")
 
     # 2. Look at every icon inside the grid (not the legend, which lives in a different panel).
-    available: list[Tag] = []
-    unknown: set[str] = set()
-    for el in grid.find_all(["img", "input"]):  # slots may be <img> or <input type="image">
-        name = _image_name(el.get("src"))
-        if not name:
-            continue
-        if name == IMG_AVAILABLE:
-            available.append(el)
-        elif name not in IMG_KNOWN_NOT_AVAILABLE:
-            unknown.add(name)
-
-    if available:
-        slots = frozenset(_describe(el, n, team) for n, el in enumerate(available, start=1))
+    slots, unknown = _scan(grid, team)
+    if slots:
         return CheckResult(Status.SLOTS, slots=slots)
 
     # 3. Icons we don't recognise are suspicious: maybe "available" looks different
     #    in the grid than in the legend. Flag it rather than silently saying "no slots".
     if unknown:
-        return CheckResult(Status.UNEXPECTED, detail=f"Unrecognised icons in the grid: {sorted(unknown)[:3]}")
+        return CheckResult(Status.UNEXPECTED, detail=f"Unrecognised icons in the grid: {unknown[:3]}")
 
     # 4. Positive confirmation of "no slots": the page says so in words.
     message = soup.find(id=NO_SLOTS_MESSAGE_ID)
@@ -69,6 +61,61 @@ def classify_page(html: str, team: str = "") -> CheckResult:
         return CheckResult(Status.NO_SLOTS)
 
     return CheckResult(Status.UNEXPECTED, detail="The grid is empty but the 'no available slots' message is missing.")
+
+
+def scan_grid(html: str, team: str = "") -> tuple[frozenset[Slot], list[str]]:
+    """Available slots in the grid, plus the names of any icons we don't recognise."""
+    grid = BeautifulSoup(html, "html.parser").find(id=GRID_PANEL_ID)
+    return _scan(grid, team) if grid is not None else (frozenset(), [])
+
+
+def other_team_options(html: str) -> list[tuple[str, str]]:
+    """(exact option value, label) for each team in the 'slots from other teams' dropdown."""
+    select = BeautifulSoup(html, "html.parser").find(id=OTHER_TEAM_SELECT_ID)
+    if select is None:
+        return []
+    teams = []
+    for option in select.find_all("option"):
+        value = option.get("value", "")  # keep trailing spaces: the page expects them back
+        if value.strip() and value.strip().lower() != OTHER_TEAM_PLACEHOLDER:
+            teams.append((value, option.get_text(strip=True)))
+    return teams
+
+
+# ------------------------------------------------------------------ the AJAX reply format
+class Record(NamedTuple):
+    kind: str     # "updatePanel", "hiddenField", "error", "pageRedirect", ...
+    id: str
+    content: str
+
+
+def parse_delta(text: str) -> list[Record]:
+    """Split an ASP.NET UpdatePanel reply into records.
+
+    The format is  length|type|id|content|  repeated. `length` counts the characters
+    of `content`, which can itself contain '|', so splitting on '|' would not work.
+    """
+    records: list[Record] = []
+    pos = 0
+    while pos < len(text):
+        try:
+            length_end = text.index("|", pos)
+            length = int(text[pos:length_end])
+            type_end = text.index("|", length_end + 1)
+            id_end = text.index("|", type_end + 1)
+        except ValueError:
+            break  # not (or no longer) in the expected format
+        start = id_end + 1
+        if text[start + length:start + length + 1] != "|":
+            break  # the length doesn't line up: stop rather than misread the rest
+        records.append(Record(text[length_end + 1:type_end], text[type_end + 1:id_end], text[start:start + length]))
+        pos = start + length + 1
+    return records
+
+
+def delta_to_html(records: list[Record]) -> str:
+    """Rebuild the refreshed panels as HTML, so the normal parser can read the reply."""
+    return "".join(f'<div id="{r.id}">{r.content}</div>' for r in records if r.kind == "updatePanel")
 
 
 def redact_html(html: str) -> str:
@@ -79,6 +126,10 @@ def redact_html(html: str) -> str:
     for field in soup.find_all("input", attrs={"type": "hidden"}):  # __VIEWSTATE and friends
         field["value"] = "REDACTED"
     for element_id in (
+        "HeaderSub_lblName",          # page header: your name, learner id, expiry, balance
+        "HeaderSub_lblUserID",
+        "HeaderSub_lblExpiryDate",
+        "HeaderSub_lblStoreValue",
         "ContentPlaceHolder1_lblStoreValue",
         "ContentPlaceHolder1_lblCurrentCharge",
         "ContentPlaceHolder1_lblNewBalance",
@@ -97,77 +148,19 @@ def _image_name(src: str | None) -> str:
     return src.split("?")[0].rsplit("/", 1)[-1].lower()
 
 
-def current_team_name(html: str) -> str:
-    """Read the current-team label shown above the booking grid, if present."""
-    soup = BeautifulSoup(html, "html.parser")
-    marker = re.compile(r"you\s+are\s+with", re.IGNORECASE)
-    for text in soup.find_all(string=marker):
-        for parent in [text.parent, *text.parent.parents]:
-            value = parent.get_text(" ", strip=True)
-            match = re.search(
-                r"you\s+are\s+with\s+(.+?)(?=\s+(?:slots available|note:|select course)\b|$)",
-                value,
-                re.IGNORECASE,
-            )
-            if match:
-                team = match.group(1).strip()
-                if team:
-                    return team
-    return ""
-
-
-def other_team_selector(html: str) -> tuple[str, list[tuple[str, str]], str | None] | None:
-    """Find the dropdown next to the "from other teams" label.
-
-    The portal uses generated ASP.NET element IDs, so locate the control by its
-    visible heading and return a CSS selector plus its exact option values.
-    """
-    soup = BeautifulSoup(html, "html.parser")
-    course = soup.find("select", id=COURSE_SELECT_ID)
-    heading = soup.find(string=re.compile(r"from\s+other\s+teams", re.IGNORECASE))
-    if heading is None:
-        return None
-
-    team_select = None
-    for container in [heading.parent, *heading.parent.parents]:
-        candidates = [
-            select for select in container.find_all("select")
-            if select is not course
-        ]
-        if candidates:
-            team_select = candidates[0]
-            break
-    if team_select is None:
-        team_select = heading.find_next("select")
-    if team_select is None or team_select is course:
-        return None
-
-    element_id = team_select.get("id")
-    name = team_select.get("name")
-    if element_id:
-        selector = f'select[id="{element_id}"]'
-    elif name:
-        selector = f'select[name="{name}"]'
-    else:
-        return None
-
-    all_options = team_select.find_all("option", recursive=False)
-    placeholder = next(
-        (
-            str(option.get("value", ""))
-            for option in all_options
-            if not option.get("value", "").strip()
-            or re.match(r"[-\s]*please select|select team", option.get_text(" ", strip=True), re.IGNORECASE)
-        ),
-        None,
-    )
-    options = [
-        (str(option.get("value", "")), option.get_text(" ", strip=True))
-        for option in all_options
-        if option.get("value", "").strip() and option.get_text(" ", strip=True)
-        and str(option.get("value", "")) != placeholder
-    ]
-    return selector, options, placeholder
+def _scan(grid: Tag, team: str) -> tuple[frozenset[Slot], list[str]]:
+    available: list[Tag] = []
+    unknown: set[str] = set()
+    for el in grid.find_all(["img", "input"]):  # slots may be <img> or <input type="image">
+        name = _image_name(el.get("src"))
+        if not name:
+            continue
+        if name == IMG_AVAILABLE:
+            available.append(el)
+        elif name not in IMG_KNOWN_NOT_AVAILABLE:
+            unknown.add(name)
+    slots = frozenset(_describe(el, n, team) for n, el in enumerate(available, start=1))
+    return slots, sorted(unknown)
 
 
 def _describe(icon: Tag, ordinal: int, team: str = "") -> Slot:

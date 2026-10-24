@@ -4,6 +4,7 @@
     test-telegram   send a test message
     check           look at the booking page once and print what the bot sees
     run             the real thing: check every few minutes, message you on changes
+                    (then /pause, /resume and /status work from Telegram)
 """
 from __future__ import annotations
 
@@ -11,12 +12,12 @@ import argparse
 import logging
 import random
 import sys
-import time
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from .alerts import AlertPolicy, Decision
+from .commands import BotState, CommandListener
 from .config import ROOT, Config, ConfigError, load_config
 from .models import CheckResult, Status
 from .notifier import Telegram, TelegramError
@@ -61,7 +62,8 @@ def cmd_check(cfg: Config, args: argparse.Namespace) -> int:
 
 
 def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
-    notifier = Telegram(*cfg.require_telegram())
+    token, chat_id = cfg.require_telegram()
+    notifier = Telegram(token, chat_id)
     from .browser import BrowserSession
 
     policy = AlertPolicy(
@@ -70,22 +72,43 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
         cooldown=timedelta(minutes=cfg.cooldown_minutes),
         started_at=datetime.now(),
     )
+    state = BotState(poll_seconds=cfg.poll_seconds)  # shared with the Telegram command handler
+    listener = CommandListener(notifier, chat_id, state)
+    listener.start()
+
     # Messages wait in an "outbox" until Telegram confirms delivery, so a network
     # blip doesn't swallow a slot alert.
-    outbox = [f"🟢 CDC bot started. Checking about every {cfg.poll_seconds} seconds."]
+    outbox = [
+        f"🟢 CDC bot started. Checking about every {cfg.poll_seconds} seconds. "
+        "Send /pause, /resume or /status anytime."
+    ]
     log.info("Started. Polling about every %s seconds.", cfg.poll_seconds)
+    was_paused = False
 
     with BrowserSession(cfg) as session:
         try:
             while True:
+                if state.paused:
+                    was_paused = True
+                    outbox.extend(policy.paused_reminder(datetime.now()))
+                    outbox = _flush(notifier, outbox)
+                    listener.wait(60)  # no checks while paused, but keep listening for /resume
+                    continue
+                if was_paused:
+                    policy.reset_seen_slots()  # so you hear about whatever is available right now
+                    was_paused = False
+
                 result = _safe_check(session)
+                state.last_result, state.last_check_at = result, datetime.now()
                 log.info("Check: %s %s", result.status.value, result.detail)
 
                 decision = policy.handle(result, datetime.now())
                 outbox.extend(decision.messages)
                 outbox = _flush(notifier, outbox)
 
-                time.sleep(_next_delay(cfg, decision))
+                delay = _next_delay(cfg, decision)
+                state.next_check_at = datetime.now() + timedelta(seconds=delay)
+                listener.wait(delay)  # sleeps, but answers /pause, /resume and /status meanwhile
         except KeyboardInterrupt:
             log.info("Stopped by user.")
         except Exception as exc:  # noqa: BLE001 - tell you before dying silently

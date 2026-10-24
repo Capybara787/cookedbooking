@@ -92,6 +92,17 @@ class AlertPolicy:
 
         return decision
 
+    def reset_seen_slots(self) -> None:
+        """Forget which slots we've reported, so the next check reports everything available."""
+        self._seen_slots = frozenset()
+
+    def paused_reminder(self, now: datetime) -> list[str]:
+        """While paused nothing is checked, so the normal heartbeat never runs. Remind instead."""
+        if self._heartbeat_every > timedelta(0) and now - self._last_heartbeat >= self._heartbeat_every:
+            self._last_heartbeat = now
+            return ["⏸ CDC bot is paused and NOT checking for slots. Send /resume to start again."]
+        return []
+
     # ------------------------------------------------------------------ message text
     def _slots_message(self, slots: frozenset[Slot], new: frozenset[Slot]) -> str:
         title = "🚗 CDC slot available!" if len(slots) == 1 else f"🚗 {len(slots)} CDC slots available!"

@@ -1,4 +1,4 @@
-"""Exercises the `run` loop with a fake browser and a fake Telegram (no network, no sleeping)."""
+"""Exercises the `run` loop with a fake browser, fake Telegram and fake command listener."""
 import argparse
 
 import pytest
@@ -29,7 +29,24 @@ class FakeTelegram:
         FakeTelegram.sent.append(text)
 
 
-def fake_session_class(script):
+class FakeListener:
+    """Stands in for the Telegram command listener. Records each wait instead of sleeping."""
+    waits: list[float] = []
+    script: list = []  # actions run after each wait, e.g. "the user sends /pause"
+
+    def __init__(self, notifier, chat_id, state):
+        self.state = state
+
+    def start(self):
+        pass
+
+    def wait(self, seconds):
+        FakeListener.waits.append(seconds)
+        if FakeListener.script:
+            FakeListener.script.pop(0)(self.state)
+
+
+def fake_session_class(script, calls):
     class FakeSession:
         def __init__(self, cfg):
             self._results = iter(script)
@@ -41,6 +58,7 @@ def fake_session_class(script):
             return False
 
         def check(self):
+            calls.append(1)
             try:
                 return next(self._results)
             except StopIteration:
@@ -50,31 +68,33 @@ def fake_session_class(script):
 
 
 @pytest.fixture
-def delays(monkeypatch):
-    recorded = []
+def env(monkeypatch):
     FakeTelegram.sent, FakeTelegram.fail_next = [], 0
+    FakeListener.waits, FakeListener.script = [], []
     monkeypatch.setattr(cli, "Telegram", FakeTelegram)
-    monkeypatch.setattr(cli.time, "sleep", recorded.append)
-    return recorded
+    monkeypatch.setattr(cli, "CommandListener", FakeListener)
 
 
 def run(monkeypatch, script):
-    monkeypatch.setattr(browser_module, "BrowserSession", fake_session_class(script))
-    return cli.cmd_run(CFG, argparse.Namespace())
+    calls = []
+    monkeypatch.setattr(browser_module, "BrowserSession", fake_session_class(script, calls))
+    assert cli.cmd_run(CFG, argparse.Namespace()) == 0
+    return calls
 
 
-def test_slot_alert_then_cooldown_then_normal_polling(monkeypatch, delays):
+def test_slot_alert_then_cooldown_then_normal_polling(monkeypatch, env):
     none, found = CheckResult(Status.NO_SLOTS), CheckResult(Status.SLOTS, frozenset({A}))
-    assert run(monkeypatch, [none, found, found, none]) == 0
+    run(monkeypatch, [none, found, found, none])
 
-    assert FakeTelegram.sent[0].startswith("🟢")                        # startup message
+    waits = FakeListener.waits
+    assert FakeTelegram.sent[0].startswith("🟢") and "/pause" in FakeTelegram.sent[0]
     assert sum("slot available" in m for m in FakeTelegram.sent) == 1  # alerted once, not twice
-    assert delays[0] == pytest.approx(180, rel=0.21)                   # normal jittered delay
-    assert delays[1] == 600                                            # cooldown right after the alert
-    assert delays[2] == pytest.approx(180, rel=0.21)                   # back to normal
+    assert waits[0] == pytest.approx(180, rel=0.21)                    # normal jittered delay
+    assert waits[1] == 600                                             # cooldown right after the alert
+    assert waits[2] == pytest.approx(180, rel=0.21)                    # back to normal
 
 
-def test_alert_survives_a_telegram_outage(monkeypatch, delays):
+def test_alert_survives_a_telegram_outage(monkeypatch, env):
     found = CheckResult(Status.SLOTS, frozenset({A}))
     FakeTelegram.fail_next = 1   # the very first send (the startup message) fails
     run(monkeypatch, [found, CheckResult(Status.NO_SLOTS)])
@@ -82,3 +102,17 @@ def test_alert_survives_a_telegram_outage(monkeypatch, delays):
     assert len(FakeTelegram.sent) == 2
     assert FakeTelegram.sent[0].startswith("🟢")
     assert "slot available" in FakeTelegram.sent[1]
+
+
+def test_pause_stops_checking_and_resume_reports_current_slots_again(monkeypatch, env):
+    found = CheckResult(Status.SLOTS, frozenset({A}))
+    FakeListener.script = [
+        lambda s: setattr(s, "paused", True),    # after the first check, the user sends /pause
+        lambda s: None,                          # still paused through a second wait
+        lambda s: setattr(s, "paused", False),   # the user sends /resume
+    ]
+    calls = run(monkeypatch, [found, found])
+
+    assert FakeListener.waits == [600, 60, 60, 600]   # 60 s waits are the paused ones
+    assert len(calls) == 3                            # 2 real checks (+1 that ends the loop); none while paused
+    assert sum("slot available" in m for m in FakeTelegram.sent) == 2  # resuming re-reports the slot
