@@ -8,3 +8,4 @@ __pycache__/
 cdc_bot.log*
 debug/
 .pytest_cache/
+notes.txt
