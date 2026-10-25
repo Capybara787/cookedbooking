@@ -7,4 +7,4 @@
 PROFILE="$HOME/cdc_bot_profile"
 
 nohup chromium --remote-debugging-port=9222 --user-data-dir="$PROFILE" \
-  https://cdc.com.sg/ >/dev/null 2>&1 &
+  https://www.cdc.com.sg/ >/dev/null 2>&1 &
