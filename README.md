@@ -4,6 +4,8 @@ Watches the CDC booking page and sends you a Telegram message when a lesson slot
 
 **Notify-only.** It never reserves or books anything. You log in and book by hand.
 
+**For ONETEAM only** Only tested for class 3 one team. 
+
 ## How it works
 
 1. `launch_browser.bat` opens Chrome or Edge with a debugging port (reachable from this PC only) and its own profile folder.
