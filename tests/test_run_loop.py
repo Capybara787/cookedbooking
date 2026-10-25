@@ -1,5 +1,7 @@
 """Exercises the `run` loop with a fake browser, fake Telegram and fake command listener."""
 import argparse
+from dataclasses import replace
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -29,6 +31,18 @@ class FakeTelegram:
         FakeTelegram.sent.append(text)
 
 
+class FakeClock:
+    """Replaces datetime in the run loop so minutes of waiting take no real time."""
+    t = datetime(2026, 10, 21, 12, 0)
+
+    @classmethod
+    def now(cls):
+        return cls.t
+
+
+KEEPALIVE_CALLS: list[int] = []
+
+
 class FakeListener:
     """Stands in for the Telegram command listener. Records each wait instead of sleeping."""
     waits: list[float] = []
@@ -42,11 +56,14 @@ class FakeListener:
 
     def wait(self, seconds):
         FakeListener.waits.append(seconds)
+        FakeClock.t += timedelta(seconds=seconds)
         if FakeListener.script:
             FakeListener.script.pop(0)(self.state)
 
 
-def fake_session_class(script, calls):
+def fake_session_class(script, calls, keepalives=()):
+    keepalive_results = iter(keepalives)
+
     class FakeSession:
         def __init__(self, cfg):
             self._results = iter(script)
@@ -64,6 +81,10 @@ def fake_session_class(script, calls):
             except StopIteration:
                 raise KeyboardInterrupt  # ends the loop, like pressing Ctrl+C
 
+        def keep_alive(self):
+            KEEPALIVE_CALLS.append(1)
+            return next(keepalive_results, None)  # None = session still fine
+
     return FakeSession
 
 
@@ -71,14 +92,17 @@ def fake_session_class(script, calls):
 def env(monkeypatch):
     FakeTelegram.sent, FakeTelegram.fail_next = [], 0
     FakeListener.waits, FakeListener.script = [], []
+    KEEPALIVE_CALLS.clear()
+    FakeClock.t = datetime(2026, 10, 21, 12, 0)
+    monkeypatch.setattr(cli, "datetime", FakeClock)
     monkeypatch.setattr(cli, "Telegram", FakeTelegram)
     monkeypatch.setattr(cli, "CommandListener", FakeListener)
 
 
-def run(monkeypatch, script):
+def run(monkeypatch, script, cfg=CFG, keepalives=()):
     calls = []
-    monkeypatch.setattr(browser_module, "BrowserSession", fake_session_class(script, calls))
-    assert cli.cmd_run(CFG, argparse.Namespace()) == 0
+    monkeypatch.setattr(browser_module, "BrowserSession", fake_session_class(script, calls, keepalives))
+    assert cli.cmd_run(cfg, argparse.Namespace()) == 0
     return calls
 
 
@@ -116,3 +140,52 @@ def test_pause_stops_checking_and_resume_reports_current_slots_again(monkeypatch
     assert FakeListener.waits == [600, 60, 60, 600]   # 60 s waits are the paused ones
     assert len(calls) == 3                            # 2 real checks (+1 that ends the loop); none while paused
     assert sum("slot available" in m for m in FakeTelegram.sent) == 2  # resuming re-reports the slot
+
+
+def test_problems_are_rechecked_quickly_and_reported_after_two_strikes(monkeypatch, env):
+    out = CheckResult(Status.LOGGED_OUT, detail="Landed on /login")
+    run(monkeypatch, [CheckResult(Status.NO_SLOTS), out, out, CheckResult(Status.NO_SLOTS)])
+
+    waits = FakeListener.waits
+    assert waits[0] == pytest.approx(180, rel=0.21)       # normal interval
+    assert 60 <= waits[1] <= 80 and 60 <= waits[2] <= 80  # about a minute while logged out
+    assert waits[3] == pytest.approx(180, rel=0.21)       # back to normal once it recovers
+    assert any("log in again" in m for m in FakeTelegram.sent)
+    assert any("back to normal" in m for m in FakeTelegram.sent)
+
+
+# ---- keep-alive while paused ---------------------------------------------------------
+PAUSE = lambda s: setattr(s, "paused", True)    # noqa: E731
+RESUME = lambda s: setattr(s, "paused", False)  # noqa: E731
+NOOP = lambda s: None                           # noqa: E731
+TEN_MINUTES_PAUSED = [PAUSE] + [NOOP] * 10 + [RESUME]  # eleven 60 s waits while paused, then /resume
+
+
+def paused_run(monkeypatch, keepalives, cfg=CFG):
+    FakeListener.script = list(TEN_MINUTES_PAUSED)
+    return run(monkeypatch, [CheckResult(Status.NO_SLOTS)], cfg=cfg, keepalives=keepalives)
+
+
+def test_keepalive_runs_every_five_minutes_while_paused_without_checking_slots(monkeypatch, env):
+    calls = paused_run(monkeypatch, keepalives=[None, None])
+    assert len(KEEPALIVE_CALLS) == 2   # at 5 and 10 minutes into the pause
+    assert len(calls) == 2             # 1 real check before the pause, then 1 after /resume (which ends the test)
+    assert not any("keep your CDC session alive" in m for m in FakeTelegram.sent)
+
+
+def test_dead_session_while_paused_warns_once(monkeypatch, env):
+    paused_run(monkeypatch, keepalives=["Landed on /login", "Landed on /login"])
+    warnings = [m for m in FakeTelegram.sent if "keep your CDC session alive" in m]
+    assert len(warnings) == 1 and "Landed on /login" in warnings[0] and "/resume" in warnings[0]
+
+
+def test_recovered_session_while_paused_is_announced(monkeypatch, env):
+    paused_run(monkeypatch, keepalives=["Landed on /login", None])
+    sent = FakeTelegram.sent
+    assert any("keep your CDC session alive" in m for m in sent)
+    assert sent[-1] == "✅ Your CDC session looks good again."
+
+
+def test_keepalive_can_be_switched_off(monkeypatch, env):
+    paused_run(monkeypatch, keepalives=[], cfg=replace(CFG, keepalive_minutes=0))
+    assert KEEPALIVE_CALLS == []

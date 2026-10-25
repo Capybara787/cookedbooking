@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 DEFAULT_BOOKING_URL = "https://bookingportal.cdc.com.sg/NewPortal/Booking/BookingPL.aspx"
 MIN_POLL_SECONDS = 60  # guard rail: be gentle with the server, whatever .env says
+MIN_KEEPALIVE_MINUTES = 2.0
 
 log = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ class Config:
     poll_seconds: int
     cooldown_minutes: float
     heartbeat_hours: float
+    keepalive_minutes: float = 5.0  # while paused; 0 = off
 
     def require_token(self) -> str:
         if not self.telegram_token:
@@ -66,6 +68,11 @@ def load_config() -> Config:
         log.warning("POLL_SECONDS=%s is too aggressive; using %s instead.", poll, MIN_POLL_SECONDS)
         poll = MIN_POLL_SECONDS
 
+    keepalive = max(0.0, _number("KEEPALIVE_MINUTES", 5.0))
+    if 0 < keepalive < MIN_KEEPALIVE_MINUTES:
+        log.warning("KEEPALIVE_MINUTES=%s is too aggressive; using %s instead.", keepalive, MIN_KEEPALIVE_MINUTES)
+        keepalive = MIN_KEEPALIVE_MINUTES
+
     return Config(
         telegram_token=os.getenv("TELEGRAM_BOT_TOKEN", "").strip(),
         telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID", "").strip(),
@@ -77,4 +84,5 @@ def load_config() -> Config:
         poll_seconds=poll,
         cooldown_minutes=_number("COOLDOWN_MINUTES", 10.0),
         heartbeat_hours=_number("HEARTBEAT_HOURS", 24.0),
+        keepalive_minutes=keepalive,
     )

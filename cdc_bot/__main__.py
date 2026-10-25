@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .alerts import AlertPolicy, Decision
 from .commands import BotState, CommandListener
-from .config import ROOT, Config, ConfigError, load_config
+from .config import MIN_POLL_SECONDS, ROOT, Config, ConfigError, load_config
 from .models import CheckResult, Status
 from .notifier import Telegram, TelegramError
 from .parser import classify_page, redact_html
@@ -83,19 +83,31 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
         "Send /pause, /resume or /status anytime."
     ]
     log.info("Started. Polling about every %s seconds.", cfg.poll_seconds)
+    keepalive_every = timedelta(minutes=cfg.keepalive_minutes)
+    next_keepalive = datetime.now()
+    session_warned = False  # have we told you the session looks dead while paused?
     was_paused = False
 
     with BrowserSession(cfg) as session:
         try:
             while True:
                 if state.paused:
-                    was_paused = True
-                    outbox.extend(policy.paused_reminder(datetime.now()))
+                    now = datetime.now()
+                    if not was_paused:  # just paused: we touched the site moments ago
+                        was_paused = True
+                        next_keepalive = now + keepalive_every
+                        state.keepalive = f"every {cfg.keepalive_minutes:g} min" if cfg.keepalive_minutes > 0 else "off"
+                    outbox.extend(policy.paused_reminder(now))
+                    if keepalive_every > timedelta(0) and now >= next_keepalive:
+                        messages, session_warned = _keep_alive(session, state, session_warned)
+                        outbox.extend(messages)
+                        next_keepalive = datetime.now() + keepalive_every
                     outbox = _flush(notifier, outbox)
-                    listener.wait(60)  # no checks while paused, but keep listening for /resume
+                    listener.wait(60)  # no slot checks while paused, but keep listening for /resume
                     continue
                 if was_paused:
                     policy.reset_seen_slots()  # so you hear about whatever is available right now
+                    session_warned = False
                     was_paused = False
 
                 result = _safe_check(session)
@@ -107,6 +119,10 @@ def cmd_run(cfg: Config, args: argparse.Namespace) -> int:
                 outbox = _flush(notifier, outbox)
 
                 delay = _next_delay(cfg, decision)
+                if result.status.is_problem:
+                    # Logged out or a page glitch: look again soon instead of waiting out the
+                    # full interval. Still never faster than the 60 s guard rail.
+                    delay = MIN_POLL_SECONDS * random.uniform(1.0, 1.3)
                 state.next_check_at = datetime.now() + timedelta(seconds=delay)
                 listener.wait(delay)  # sleeps, but answers /pause, /resume and /status meanwhile
         except KeyboardInterrupt:
@@ -128,6 +144,28 @@ def _safe_check(session) -> CheckResult:
     except Exception as exc:  # noqa: BLE001 - one bug shouldn't kill a 24/7 bot
         log.exception("Unexpected error during a check.")
         return CheckResult(Status.UNEXPECTED, detail=f"Internal error: {type(exc).__name__}: {str(exc)[:150]}")
+
+
+def _keep_alive(session, state: BotState, warned: bool) -> tuple[list[str], bool]:
+    """One keep-alive. Returns (messages to send, whether you've now been warned)."""
+    try:
+        problem = session.keep_alive()
+    except Exception as exc:  # noqa: BLE001 - one bug shouldn't kill a 24/7 bot
+        log.exception("Unexpected error during a keep-alive.")
+        problem = f"Internal error: {type(exc).__name__}: {str(exc)[:100]}"
+    log.info("Keep-alive: %s", problem or "ok")
+    state.keepalive = f"{'failed' if problem else 'ok'} at {datetime.now():%H:%M}"
+
+    if problem and not warned:
+        return [
+            "⚠️ While paused, the bot couldn't keep your CDC session alive.\n"
+            f"{problem}\n"
+            "Before you /resume, check the bot's browser is open and log in again "
+            "(in a normal tab, not the bot's own tab). I'll tell you when the session looks good again."
+        ], True
+    if not problem and warned:
+        return ["✅ Your CDC session looks good again."], False
+    return [], warned
 
 
 def _flush(notifier: Telegram, outbox: list[str]) -> list[str]:

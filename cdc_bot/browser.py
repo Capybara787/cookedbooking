@@ -87,6 +87,27 @@ class BrowserSession:
             self.close()  # drop the connection; the next check reconnects from scratch
             return CheckResult(Status.BROWSER_DOWN, detail=f"Lost contact with the browser ({_short(exc)}).")
 
+    def keep_alive(self) -> str | None:
+        """Load the booking page and touch nothing, so the login doesn't time out.
+
+        Like a person leaving the page open and refreshing it now and then. Returns
+        None if we're still logged in, otherwise a short description of what we saw.
+        """
+        try:
+            self._ensure_connected()
+            self._page.goto(self._cfg.booking_url, wait_until="domcontentloaded", timeout=30_000)
+            try:
+                self._page.wait_for_selector(COURSE_SELECTOR, timeout=10_000)
+            except PlaywrightTimeout:
+                return self._with_location(classify_page(self._page.content())).detail or None
+            return None
+        except PlaywrightTimeout as exc:
+            self.close()
+            return f"Timed out loading the page ({_short(exc)})."
+        except PlaywrightError as exc:
+            self.close()
+            return f"Lost contact with the browser ({_short(exc)})."
+
     def current_html(self) -> str:
         """The page as it is right now (used by `check --dump`)."""
         try:

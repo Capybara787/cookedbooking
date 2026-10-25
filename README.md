@@ -50,7 +50,7 @@ Once `run` is going, message your bot:
 
 | Send | Does |
 |---|---|
-| `/pause` (or `/stop`) | Stops checking for slots. You get a reminder every `HEARTBEAT_HOURS` while paused. |
+| `/pause` (or `/stop`) | Stops checking for slots. You get a reminder every `HEARTBEAT_HOURS` while paused, and the bot keeps your login alive (see below). |
 | `/resume` (or `/start`) | Starts checking again, immediately, and tells you about any slots available right now. |
 | `/status` | Running or paused, the last check's result (with any slots), and when the next check is due. |
 | `/help` | Lists the commands. |
@@ -59,6 +59,7 @@ Once `run` is going, message your bot:
 - Commands sent while the bot was switched off are ignored when it starts.
 - The bot answers while it waits between checks. A command sent in the few seconds a check takes is answered right after it.
 - Pausing is not remembered across restarts: starting `run` always starts checking.
+- **Keep-alive while paused:** every `KEEPALIVE_MINUTES` (default 5, minimum 2, `0` = off) the bot loads the booking page, like a person leaving it open, so your login doesn't time out. It selects nothing and reads no slots. `/status` shows the latest result. If the keep-alive finds you've been logged out anyway, you get one message telling you to log in again before `/resume`. Whether a plain page load resets CDC's timer is an assumption; the `Keep-alive:` lines in `cdc_bot.log` show if it works. A fixed maximum session length can't be avoided this way.
 - Only one copy of the bot should run per Telegram bot, otherwise Telegram reports a "Conflict" error about `getUpdates`.
 
 ## Commands (on your PC)

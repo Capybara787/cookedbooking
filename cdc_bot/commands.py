@@ -42,6 +42,7 @@ class BotState:
     last_result: CheckResult | None = None
     last_check_at: datetime | None = None
     next_check_at: datetime | None = None
+    keepalive: str = ""  # e.g. "every 5 min" or "ok at 14:35" (shown while paused)
 
 
 @dataclass(frozen=True)
@@ -81,6 +82,8 @@ def describe(state: BotState, now: datetime) -> str:
         lines += [f"• {slot.describe()}" for slot in sorted(result.slots, key=lambda s: s.sort_key)]
     else:
         lines.append("No check has finished yet.")
+    if state.paused and state.keepalive:
+        lines.append(f"Session keep-alive: {state.keepalive}.")
     if not state.paused and state.next_check_at:
         minutes = max(0, round((state.next_check_at - now).total_seconds() / 60))
         lines.append(f"Next check in about {minutes} min (roughly every {state.poll_seconds} s).")

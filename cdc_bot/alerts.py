@@ -19,7 +19,7 @@ _PROBLEM_TITLE = {
     Status.UNEXPECTED: "got a page it doesn't understand",
 }
 _PROBLEM_FIX = {
-    Status.LOGGED_OUT: "Fix: log in again in the bot's browser window.",
+    Status.LOGGED_OUT: "Fix: log in again in a normal tab of the bot's browser (not the bot's own tab, which it reloads).",
     Status.BROWSER_DOWN: "Fix: run launch_browser.bat, log in, and leave that window open.",
     Status.UNEXPECTED: "Fix: run `python -m cdc_bot check --dump` and look at the saved page.",
 }

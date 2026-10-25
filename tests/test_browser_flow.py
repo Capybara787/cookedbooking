@@ -7,6 +7,7 @@ import pytest
 pytest.importorskip("playwright")
 
 from playwright.sync_api import Error as PlaywrightError  # noqa: E402
+from playwright.sync_api import TimeoutError as PlaywrightTimeout  # noqa: E402
 
 from cdc_bot.browser import OTHER_TEAM_SELECTOR, COURSE_SELECTOR, BrowserSession  # noqa: E402
 from cdc_bot.config import Config  # noqa: E402
@@ -30,12 +31,20 @@ class FakeResponse:
 class FakePage:
     url = "https://example.test/book"
 
-    def __init__(self, *replies):
+    def __init__(self, *replies, selector_missing=False):
         self._replies = list(replies)
         self.selected = []
+        self.gotos = 0
+        self._selector_missing = selector_missing
 
-    def goto(self, *a, **k): pass
-    def wait_for_selector(self, *a, **k): pass
+    def is_closed(self): return False
+
+    def goto(self, *a, **k):
+        self.gotos += 1
+
+    def wait_for_selector(self, *a, **k):
+        if self._selector_missing:
+            raise PlaywrightTimeout("no course dropdown")
     def wait_for_function(self, *a, **k): pass
     def content(self): return "<html></html>"
     def title(self): return "fake"
@@ -111,3 +120,20 @@ def test_server_error_record_is_reported():
 def test_unreadable_reply_is_reported():
     result, _ = check(FakeResponse("<html>Just a moment...</html>"))
     assert result.status is Status.UNEXPECTED and "Unreadable" in result.detail
+
+
+def keep_alive(selector_missing=False):
+    session = BrowserSession(CFG)
+    session._page = FakePage(selector_missing=selector_missing)
+    return session.keep_alive(), session._page
+
+
+def test_keep_alive_loads_the_page_and_touches_nothing():
+    problem, page = keep_alive()
+    assert problem is None
+    assert page.gotos == 1 and page.selected == []  # no dropdown changes, so no slot reading
+
+
+def test_keep_alive_reports_being_logged_out():
+    problem, _ = keep_alive(selector_missing=True)
+    assert "dropdown" in problem and "Landed on" in problem

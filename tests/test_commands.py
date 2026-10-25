@@ -53,6 +53,11 @@ def test_status_when_paused_and_before_any_check():
     assert "Paused" in text and "No check has finished yet" in text and "Next check" not in text
 
 
+def test_status_while_paused_shows_the_keepalive():
+    text = handle_command("/status", fresh_state(paused=True, keepalive="ok at 14:25"), NOW).text
+    assert "Session keep-alive: ok at 14:25" in text
+
+
 def test_unknown_command_gets_help():
     assert "/pause" in handle_command("/dance", fresh_state(), NOW).text
     assert "/pause" in handle_command("/help", fresh_state(), NOW).text
